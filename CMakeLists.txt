@@ -74,6 +74,8 @@ install(DIRECTORY include/
 # Install python scripts
 install(PROGRAMS 
   scripts/teleop.py
+  scripts/astar.py
+  scripts/astardrive.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
