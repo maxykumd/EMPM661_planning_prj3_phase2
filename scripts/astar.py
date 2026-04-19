@@ -5,14 +5,16 @@ import math
 import cv2
 import heapq
 import json
+import os
 
-
-MAP_W_CM = 400
-MAP_H_CM = 200
+MAP_W_CM = 800
+MAP_H_CM = 400
 SCALE = 2 # just for visual clarity
 CANVAS_W = int(MAP_W_CM * SCALE)
 CANVAS_H = int(MAP_H_CM * SCALE)
-ROBOT_RADIUS_CM = 14.0 # TurtleBot3 Waffle (from datasheet)
+ROBOT_RADIUS_CM = 22.0 # TurtleBot3 Waffle (from datasheet)
+CURRENT_CLEARANCE = 0.0
+GOAL_THRES = 10.0 #cm
 
 def to_opencv_coord(x_mm, y_mm):
     col = int(round(x_mm * SCALE)) 
@@ -40,12 +42,10 @@ def color_map(obs_raw, obs_inflated):
 def is_in_obstacle(x, y, clearance_cm):
     """
     Returns True if (x,y) in cm is inside obstacle or clearance zone.
-    Half-plane equations — exact math, no pixel lookup.
-    c = robot_radius + user_clearance (total inflation)
     """
-    c = ROBOT_RADIUS_CM + clearance_cm
+    c = ROBOT_RADIUS_CM + clearance_cm #total inflation)
 
-    # ── BORDER ────────────────────────────────────────────────────────────────
+    # border of map ────────────────────────────────────────────────────────────────
     if x >= MAP_W_CM - 5 - c: # right wall
         return True
     if y <= 5 + c: # bottom wall
@@ -53,49 +53,59 @@ def is_in_obstacle(x, y, clearance_cm):
     if y >= MAP_H_CM - 5 - c: # top wall
         return True
 
-    # ── LEFT WALL (two segments, 80cm each, gap in middle for robot entry) ────
+    # left wall gate ntrance (two segments, 80cm each, gap in middle ────────────────────────────────────────────────────────────────
     # top-left segment: y=120 to y=200
-    if (x <= 5 + c) and (y >= 130 - c):
+    if (x <= 5 + c) and (y >= 260 - c):
         return True
     # bottom-left segment: y=0 to y=80
-    if (x <= 5 + c) and (y <= 70 + c):
+    if (x <= 5 + c) and (y <= 140 + c):
         return True
 
+    # the 3 rectangle in map ────────────────────────────────────────────────────────────────
     # rect 1: center (42, 45), 30.40x30.40cm
-    if (x >= 42 - 15.2 - c) and (x <= 42 + 15.2 + c) and (y >= 45 - 15.2 - c) and (y <= 45 + 15.2 + c):
+    if (x >= 84 - 30.4 - c) and (x <= 84 + 30.4 + c) and (y >= 90 - 30.4 - c) and (y <= 90 + 30.4 + c):
         return True
 
-    # rect 2: center (133.5, 155), 30.40x30.40cm
-    if (x >= 133.5 - 15.2 - c) and (x <= 133.5 + 15.2 + c) and (y >= 155   - 15.2 - c) and (y <= 155   + 15.2 + c):
+    # rect 2: center (133.5, 155)
+    if (x >= 267 - 30.4 - c) and (x <= 267 + 30.4 + c) and (y >= 310 - 30.4 - c) and (y <= 310 + 30.4 + c):        
         return True
 
-    # rect 3: center (220, 174), 30.40x30.40cm 
-    if (x >= 220 - 15.2 - c) and (x <= 220 + 15.2 + c) and (y >= 174 - 15.2 - c) and (y <= 174 + 15.2 + c):
+    # rect 3: center (220, 174)
+    if (x >= 440 - 30.4 - c) and (x <= 440 + 30.4 + c) and (y >= 352 - 30.4 - c) and (y <= 352 + 30.4 + c):
         return True
 
+    # 2 diagonal and 1 straight wall ────────────────────────────────────────────────────────────────
     # vertical wall: x=281, y=55→200, thickness=5cm 
-    if (x >= 278.5 - c) and (x <= 283.5 + c) and (y >= 55 - c):
+    if (x >= 567 - c) and (x <= 577 + c) and (y >= 110 - c):
         return True
 
-    half_t = 2.5 + c #inflate wall by 2.5 each side to total 5thickness
+    half_t = 5.0 + c #inflate wall by 2.5 each side to total 5thickness
 
     # diagonal wall 1: (38.4,200) → (108.4,78.76), 30deg 
-    w1x1, w1y1 = 38.4,  200.0 #startA
-    w1x2, w1y2 = 108.4, 78.76 #endB
+    #14c3 = 121 14s3=70
+    w1x1, w1y1 = 76.8,  400.0
+    w1x2, w1y2 = 216.8, 157.52
     w1dx = w1x2 - w1x1 #how far x-dir AtoB
     w1dy = w1y2 - w1y1 #how far y-dir AtoB
     w1len = math.sqrt(w1dx**2 + w1dy**2) #wall length
-    w1nx  = -w1dy / w1len
+    w1nx  = -w1dy / w1len #perpendic x component
     w1ny  =  w1dx / w1len
     px, py = x - w1x1, y - w1y1 
     along  = (px*w1dx + py*w1dy) / w1len #dist point from AtoB
     perp   =  px*w1nx + py*w1ny #how far point is to side of wall , p-0=wall centerline 
-    if (-half_t <= perp <= half_t) and (0 <= along <= w1len):
+    extend = 20
+    if (-half_t <= perp <= half_t) and (-c -extend <= along <= w1len+c+extend):
+        return True
+
+    # circle caps at each tip
+    if math.sqrt((x-w1x1)**2 + (y-w1y1)**2) <= half_t:   # tip A cap
+        return True
+    if math.sqrt((x-w1x2)**2 + (y-w1y2)**2) <= half_t:   # tip B cap
         return True
 
     # diagonal wall 2: (126,5) → (172.17,131.86), 20deg 
-    w2x1, w2y1 = 126.0,  5.0
-    w2x2, w2y2 = 193.50, 121.91
+    w2x1, w2y1 = 252.0, 10.0
+    w2x2, w2y2 = 387.0, 243.82
     w2dx = w2x2 - w2x1
     w2dy = w2y2 - w2y1
     w2len = math.sqrt(w2dx**2 + w2dy**2)
@@ -104,17 +114,17 @@ def is_in_obstacle(x, y, clearance_cm):
     px, py = x - w2x1, y - w2y1
     along  = (px*w2dx + py*w2dy) / w2len
     perp   =  px*w2nx + py*w2ny
-    if (-half_t <= perp <= half_t) and (0 <= along <= w2len):
+    if (-half_t <= perp <= half_t) and (-c <= along <= w2len+c):
         return True
 
     return False
 
 def build_map(clearance_cm):
     """Build visual arrays using half-plane equations."""
-    print("  Building obstacle map...")
-    obs_raw      = np.zeros((CANVAS_H, CANVAS_W), dtype=np.uint8)
+    print("  Building obstacle map please wait ...")
+    obs_raw      = np.zeros((CANVAS_H, CANVAS_W), dtype=np.uint8) #create blank canvas
     obs_inflated = np.zeros((CANVAS_H, CANVAS_W), dtype=np.uint8)
-    for row in range(CANVAS_H): #loop through every pixel on screen
+    for row in range(CANVAS_H): #loop through every pixel on screen and color obstacle
         for col in range(CANVAS_W):
             x_cm = col / SCALE # convert px to cm
             y_cm = MAP_H_CM - (row / SCALE)
@@ -124,9 +134,11 @@ def build_map(clearance_cm):
                 obs_inflated[row, col] = 255
 
     # save map for verification
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    map_path = os.path.join(script_dir, "map_output.png")
     canvas = color_map(obs_raw, obs_inflated)
-    cv2.imwrite("map_output.png", canvas)
-    print("  Map saved → map_output.png")
+    cv2.imwrite(map_path, canvas)
+    print(f"  Map saved → {map_path}")
 
     return obs_raw, obs_inflated
 
@@ -191,7 +203,7 @@ def get_action_space(rpm1, rpm2):
     
 # duplicate node detection - same cell if within the threshold
 def snap_state_to_grid(x,y, theta_deg):
-    XY_POS_THRES = 1 #cm
+    XY_POS_THRES = 3 #cm
     THETA_THRES = 30 #deg
     snap_x_grid = round(x / XY_POS_THRES)
     snap_y_grid = round(y / XY_POS_THRES)
@@ -203,12 +215,11 @@ def euclidean_heuristic(x,y, goal_x, goal_y):
     return math.sqrt((x - goal_x)**2 + (y - goal_y)**2)
        
 
-GOAL_THRES = 10.0 #cm
-
 def is_goal_reached(x,y, goal_x, goal_y):
     return euclidean_heuristic(x,y, goal_x, goal_y) <= GOAL_THRES
 
 def astar(start, goal, rpm1, rpm2, obs_inflated):
+    node_to_action = {snap_state_to_grid(*start): (rpm1, rpm1)}  # dummy for start
     sx, sy, st = start
     gx, gy = goal
     actions = get_action_space(rpm1, rpm2)
@@ -240,11 +251,15 @@ def astar(start, goal, rpm1, rpm2, obs_inflated):
             
             # start backtrack
             path = []
+            actions_used = []  
             while node is not None:
                 path.append(parent_node[node])
+                if parent_map[node] is not None: #skip start node
+                    actions_used.append(node_to_action[node])
                 node = parent_map[node]
             path.reverse()
-            return path, all_curves
+            actions_used.reverse()
+            return path, all_curves, actions_used
 
         # expand all actions space
         for rpm_left, rpm_right in actions:
@@ -261,17 +276,19 @@ def astar(start, goal, rpm1, rpm2, obs_inflated):
             
             new_cost = g + step_cost # cost to reach this neighbor from curr node
             # update cost if see first time or cheaper path
+            # store action when updating neighbor
             if neighbor not in cost_come or new_cost < cost_come[neighbor]:
                 cost_come[neighbor] = new_cost #g-cost
                 parent_map[neighbor] = node
                 parent_node[neighbor] = (nx,ny,nt)
+                node_to_action[neighbor] = (rpm_left, rpm_right)
                 f_cost = new_cost + euclidean_heuristic(nx,ny,gx,gy)  
                 tie +=1
                 heapq.heappush(open_list, (f_cost, new_cost, tie, (nx, ny, nt)))
                 all_curves.append(curve)
                 
     print("No path found.")
-    return None, all_curves
+    return None, all_curves, []
                 
 
 def visualize(obs_raw, obs_inflated, start, goal, all_curves, path, rpm1, rpm2):
@@ -305,8 +322,11 @@ def visualize(obs_raw, obs_inflated, start, goal, all_curves, path, rpm1, rpm2):
     cv2.putText(canvas, f"RPM1={rpm1} RPM2={rpm2}", (10,20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200,200,200), 1)
 
-    cv2.imwrite("astar_result.png", canvas)
-    print("Saved → astar_result.png")
+    # save to script folder
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    result_path = os.path.join(script_dir, "astar_result.png")
+    cv2.imwrite(result_path, canvas)
+    print(f"Saved → {result_path}")
     cv2.imshow("A* Result — press any key to close", canvas)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
@@ -372,7 +392,7 @@ def main():
     start, goal, rpm1, rpm2 = get_user_inputs(obs_inflated)
     #step4: run Astar
     print("\nRunning A*, its thinking pls wait...")
-    path, all_curves = astar(start, goal, rpm1, rpm2, obs_inflated)
+    path, all_curves, actions_used = astar(start, goal, rpm1, rpm2, obs_inflated)
     #export path to JSON for use in the ros part
     if path is None:
         print("No path found.")
@@ -382,11 +402,14 @@ def main():
             "rpm1": rpm1, "rpm2": rpm2,
             "wheel_radius_cm": WHEEL_RADIUS_CM,
             "wheel_dist_cm":   WHEEL_DIST_CM,
-            "path": [{"x": n[0], "y": n[1], "theta_deg": n[2]} for n in path]
+            "path": [{"x": n[0], "y": n[1], "theta_deg": n[2]} for n in path],
+            "actions": [{"rpm_left": a[0], "rpm_right": a[1]} for a in actions_used]
         }
-        with open("path_output.json", "w") as f:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(script_dir, "path_output.json")
+        with open(json_path, "w") as f:
             json.dump(data, f, indent=2)
-        print("Path exported → path_output.json")
+        print(f"Path exported → {json_path}")
 
     visualize(obs_raw, obs_inflated, start, goal, all_curves, path, rpm1, rpm2)
 
