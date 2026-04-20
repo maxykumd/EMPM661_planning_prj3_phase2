@@ -88,6 +88,7 @@ def is_in_obstacle(x, y, clearance_cm):
     w1dx = w1x2 - w1x1 #how far x-dir AtoB
     w1dy = w1y2 - w1y1 #how far y-dir AtoB
     w1len = math.sqrt(w1dx**2 + w1dy**2) #wall length
+    # rotate 90deg by change x,y to -y,x
     w1nx  = -w1dy / w1len #perpendic x component
     w1ny  =  w1dx / w1len
     px, py = x - w1x1, y - w1y1 
@@ -376,7 +377,8 @@ def main():
 
     while True: #step1 : get clearance 
         try:
-            clearance = float(input("Clearance (cm): "))
+            clearance_mm = float(input("Clearance (mm): "))
+            clearance = float(clearance_mm / 10.0)
             if clearance < 0:
                 print("  Must be >= 0.\n"); continue
             break

@@ -3,6 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 
 import json
 import math
@@ -10,13 +11,18 @@ import time
 import os
 
 
-TIME_PER_ACTION_S = 1.0   # must match astar_phase2.py TIME_PER_ACTION_S
-CM_TO_M           = 0.01  # convert cm → meters for ROS2 (ROS uses meters)
+TIME_PER_ACTION_S = 1.0   
+CM_TO_M           = 0.01  # convert cm to meter for ROS2
 
 class AStarDriver(Node):
     def __init__(self):
         super().__init__("astar_driver")
+        # create odom sub
+        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.robot_x = 0.0
+        self.robot_y = 0.0
         
+        # create velocity pub
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         path_data = None
         # load the json format path
@@ -29,6 +35,9 @@ class AStarDriver(Node):
         if path_data is None:
             self.get_logger().error('path_output.json not found.')
             return
+        
+        self.path_data = path_data
+
         
         self.rpm1 = path_data["rpm1"]
         self.rpm2 = path_data["rpm2"]
@@ -45,8 +54,12 @@ class AStarDriver(Node):
         #Drive the turtlebot
         self.drive_path()
 
+    def odom_callback(self, msg):
+        self.robot_x = msg.pose.pose.position.x
+        self.robot_y = msg.pose.pose.position.y
+        
     def rpm_to_rads(self, rpm):
-        return rpm * 2 * 3.14 / 60
+        return rpm * 2 * math.pi / 60
     
     def rpms_to_twist(self, rpm_left, rpm_right):
         ul = self.rpm_to_rads(rpm_left)
@@ -125,44 +138,50 @@ class AStarDriver(Node):
 
 
     def drive_path(self):
-        """
-        Drive through each waypoint in the path.
-        For each step: find best RPM action → convert to velocity → publish.
-        """
-
         self.get_logger().info('Starting to drive. Waiting 2s for Gazebo...')
         time.sleep(2.0)
-        
-        for i in range(len(self._waypoints) - 1):
-            curr_waypoint = self._waypoints[i]
-            next_waypoint = self._waypoints[i + 1]
-            
-            cx, cy, ct = curr_waypoint['x'], curr_waypoint['y'], curr_waypoint['theta_deg']
-            nx, ny = next_waypoint['x'], next_waypoint['y']
-            
-            self.get_logger().info(
-                f'Step {i+1}/{len(self._waypoints) - 1} | '
-                f'({cx:.1f},{cy:.1f},{ct:.0f}deg) → ({nx:.1f},{ny:.1f})'
-            )
-            
-            #find which rpm action match this movement result
-            rpm_left, rpm_right = self.find_best_action(cx, cy, ct, nx, ny)
-            #convert rpm to linear, angular vel for ROS
+
+        # read actions directly from JSON — no need to guess which action was used
+        actions = self.path_data['actions']
+        last_logged_x = self.robot_x   # ← track last logged position
+        last_logged_y = self.robot_y
+
+        for i, action in enumerate(actions):
+            rpm_left  = action['rpm_left']
+            rpm_right = action['rpm_right']
+
             linear_vel, angular_vel = self.rpms_to_twist(rpm_left, rpm_right)
 
             self.get_logger().info(
-                f'  RPMs=({rpm_left},{rpm_right}) | '
+                f'Step {i+1}/{len(actions)} | '
+                f'RPMs=({rpm_left},{rpm_right}) | '
                 f'linear={linear_vel:.3f}m/s  angular={angular_vel:.3f}rad/s'
             )
-            
-            # publish velocity for 1 second (open-loop)
-            self.publish_cmd_velocity(linear_vel, angular_vel)
-            # wait for 1 second before move to next waypoint
-            time.sleep(TIME_PER_ACTION_S)
-        
-        self.stop_robot()
-        self.get_logger().info('Path complete!')
 
+            # CORRECT — spin while sleeping so odom updates
+            self.publish_cmd_velocity(linear_vel, angular_vel)
+            start = time.time()
+
+            while time.time() - start < TIME_PER_ACTION_S:
+                rclpy.spin_once(self, timeout_sec=0.1)
+
+                # only log if moved more than 0.3m = 30cm from last log
+                dist_moved = math.sqrt(
+                    (self.robot_x - last_logged_x)**2 +
+                    (self.robot_y - last_logged_y)**2
+                )
+                if dist_moved >= 0.3:
+                    self.get_logger().info(
+                        f'  Pos: ({self.robot_x:.2f}, {self.robot_y:.2f})'
+                    )
+                    last_logged_x = self.robot_x
+                    last_logged_y = self.robot_y
+        self.stop_robot()
+        # log final position always
+        self.get_logger().info(
+            f'Final pos: ({self.robot_x:.2f}, {self.robot_y:.2f})'
+        )
+        self.get_logger().info('Path complete!')
 
 def main(args=None):
     rclpy.init(args=args)
