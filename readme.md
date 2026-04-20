@@ -120,12 +120,12 @@ prj3p2.../
 **Step 2 — Launch the Gazebo competition world:**
 
 ```bash
-ros2 launch turtlebot3_proj3 competition_world.launch.py
+ros2 launch turtlebot3_project3 competition_world.launch.py
 ```
 **Step 3 — Run the Astar driver node:**
 ```bash
 cd ~/prj3p2/scripts
-ros2 run turtlebot3_proj3 astardrive.py
+ros2 run turtlebot3_project3 astardrive.py
 ```
 > Make sure `path_output.json` is in the `scripts/` folder before running the driver.
 
